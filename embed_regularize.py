@@ -2,6 +2,7 @@ import numpy as np
 
 import torch
 
+"""
 def embedded_dropout(embed, words, dropout=0.1, scale=None):
   if dropout:
     mask = embed.weight.data.new().resize_((embed.weight.size(0), 1)).bernoulli_(1 - dropout).expand_as(embed.weight) / (1 - dropout)
@@ -19,6 +20,24 @@ def embedded_dropout(embed, words, dropout=0.1, scale=None):
     padding_idx, embed.max_norm, embed.norm_type,
     embed.scale_grad_by_freq, embed.sparse
   )
+  return X
+"""
+
+def embedded_dropout(embed, words, dropout=0.1, scale=None):
+  padding_idx = embed.padding_idx
+  if padding_idx is None:
+      embed.padding_idx = -1
+
+  X = embed(words)
+  if dropout:
+    # the original implementation seems to be sharing the same mask for all dimensions
+    # we stick to that implementation aiming for best reproduction
+    mask = X.new().resize_((X.size(0), X.size(1), 1)).bernoulli_(1 - dropout).expand_as(X) / (1 - dropout)
+    X = mask * X
+
+  if scale:
+    X = scale.expand_as(X) * X
+
   return X
 
 if __name__ == '__main__':
