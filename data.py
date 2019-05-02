@@ -54,3 +54,25 @@ class Corpus(object):
                     token += 1
 
         return ids
+
+
+class SentCorpus(object):
+    def __init__(self, path, dictionary):
+        self.dictionary = dictionary 
+        self.test = self.tokenize(path)
+
+    def tokenize(self, path):
+        """Tokenizes a text file."""
+        assert os.path.exists(path)
+        # Tokenize file content
+        ids = []
+        with open(path, 'r') as f:
+            for line in f:
+                words = line.split() + ['<eos>']
+                sent = torch.LongTensor(len(words))
+                for idx, word in enumerate(words):
+                    sent[idx] = self.dictionary.word2idx[word]
+                ids.append(sent)
+
+        return ids
+

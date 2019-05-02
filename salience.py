@@ -6,6 +6,7 @@
 # Distributed under terms of the MIT license.
 
 from enum import Enum
+import pdb
 
 import torch
 import torch.nn as nn
@@ -49,6 +50,12 @@ class SalienceManager:
     target: (bsz, target_len) target word to evaluate salience score on
     """
     cls.__bsz, tlen = target.size()
+    if model.encoder.salience_type == SalienceType.smoothed:
+        cls.__n_samples = model.encoder.smooth_samples
+    elif model.encoder.salience_type == SalienceType.integral:
+        cls.__n_samples = model.encoder.integral_steps
+    else:
+        cls.__n_samples = 1
     target_probs = torch.gather(probs, -1, target).view(cls.__bsz, cls.n_samples, tlen)  # (batch_size, n_samples, target_len)
     # this mean is taken mainly for speed reason
     # otherwise, we would have to iterate through n_samples as well, which is not necessary
@@ -66,8 +73,14 @@ class SalienceManager:
     target: (bsz,) target word corresponding to a single time step, to evaluate salience score on
     """
     cls.__bsz = target.size()[0]
-    target_probs = torch.gather(probs, -1, target).view(cls.__bsz, cls.n_samples)  # (batch_size, n_samples)
-    target_probs = torch.mean(target_probs, dim=1)
+    if model.encoder.salience_type == SalienceType.smoothed:
+        cls.__n_samples = model.encoder.smooth_samples
+    elif model.encoder.salience_type == SalienceType.integral:
+        cls.__n_samples = model.encoder.integral_steps
+    else:
+        cls.__n_samples = 1
+    target_probs = torch.gather(probs, -1, target.unsqueeze(1)).view(cls.__bsz, cls.__n_samples)  # (batch_size, n_samples)
+    target_probs = torch.mean(target_probs, dim=1)  # (batch_size,)
     for i in range(cls.__bsz):
       target_probs[i].backward(retain_graph=True)
       model.zero_grad()
@@ -107,6 +120,21 @@ class SalienceEmbedding(nn.Embedding):
     self.smooth_factor = smooth_factor
     self.smooth_samples = smooth_samples
     self.integral_steps = integral_steps
+    self.activated = False
+
+
+  def activate(self):
+    """
+    Salience should not be computed for all evaluations, like validation during training.
+    In these cases, SalienceEmbedding should act the same way as normal word embedding.
+    This switch should be turned on when salience needs to be computed.
+    """
+    self.activated = True
+
+
+  def deactivate(self):
+    self.activated = False
+
 
   def forward(self, input):
     """
@@ -117,10 +145,11 @@ class SalienceEmbedding(nn.Embedding):
     """
 
     batch_size = input.size(0)
-    if not self.salience_type and not self.training:
+    if self.salience_type and self.activated:
       # in case where multiple samples are needed
       # repeat the samples and set accompanying parameters accordingly
       orig_size = list(input.size())
+      new_size = orig_size
       if self.salience_type == SalienceType.smoothed:
         new_size = tuple([orig_size[0] * self.smooth_samples] + orig_size[1:])
       if self.salience_type == SalienceType.integral:
@@ -130,10 +159,10 @@ class SalienceEmbedding(nn.Embedding):
     # normal embedding query
     x = super(SalienceEmbedding, self).forward(input)
 
-    if not self.salience_type and not self.training:
+    if self.salience_type and self.activated:
       sel = torch.ones_like(input).float()
       sel.requires_grad = True
-      sel.register_hook(lambda grad: SaliencyManager.extend_saliency(grad))
+      sel.register_hook(lambda grad: SalienceManager.compute_salience(grad))
 
       xp = x.permute(2, 0, 1)
       if self.salience_type == SalienceType.integral:

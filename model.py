@@ -6,17 +6,23 @@ from embed_regularize import embedded_dropout
 from locked_dropout import LockedDropout
 from weight_drop import WeightDrop
 
+from salience import SalienceType
+
 class RNNModel(nn.Module):
     """Container module with an encoder, a recurrent module, and a decoder."""
 
-    def __init__(self, rnn_type, ntoken, ninp, nhid, nlayers, dropout=0.5, dropouth=0.5, dropouti=0.5, dropoute=0.1, wdrop=0, tie_weights=False, salience=False):
+    def __init__(self, rnn_type, ntoken, ninp, nhid, nlayers, dropout=0.5, dropouth=0.5, dropouti=0.5, dropoute=0.1, wdrop=0, tie_weights=False, salience_type=False, smooth_factor=0.15, smooth_samples=30, integral_steps=100):
         super(RNNModel, self).__init__()
         self.lockdrop = LockedDropout()
         self.idrop = nn.Dropout(dropouti)
         self.hdrop = nn.Dropout(dropouth)
         self.drop = nn.Dropout(dropout)
-        if salience:
-            self.encoder = salience.SalienceEmbedding(ntokens, ninp)
+        if salience_type:
+            self.encoder = salience.SalienceEmbedding(ntoken, ninp,
+                                                      salience_type=eval("SalienceType.{0}".format(salience_type)),
+                                                      smooth_factor=smooth_factor,
+                                                      smooth_samples=smooth_samples,
+                                                      integral_steps=integral_steps)
         else:
             self.encoder = nn.Embedding(ntoken, ninp)
         assert rnn_type in ['LSTM', 'QRNN', 'GRU'], 'RNN type is not supported'
@@ -81,7 +87,6 @@ class RNNModel(nn.Module):
         raw_outputs = []
         outputs = []
         for l, rnn in enumerate(self.rnns):
-            current_input = raw_output
             raw_output, new_h = rnn(raw_output, hidden[l])
             new_hidden.append(new_h)
             raw_outputs.append(raw_output)

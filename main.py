@@ -64,6 +64,14 @@ parser.add_argument('--optimizer', type=str,  default='sgd',
                     help='optimizer to use (sgd, adam)')
 parser.add_argument('--when', nargs="+", type=int, default=[-1],
                     help='When (which epochs) to divide the learning rate by 10 - accepts multiple')
+parser.add_argument('--salience-type', choices=[None, 'vanilla', 'smoothed'], default=None,
+                    help='type of salience to use for the embedding (default=None)')
+parser.add_argument('--smooth-factor', type=float, default=0.15,
+                    help='if SmoothGrad is used, specify what is the smooth factor (default=0.15)')
+parser.add_argument('--smooth-samples', type=int, default=30,
+                    help='if SmoothGrad is used, specify how many samples should be generated (default=30)')
+parser.add_argument('--integral-steps', type=int, default=100,
+                    help='if Axiomatic Attribution is used, how many integral steps should be made (default=100)')
 args = parser.parse_args()
 args.tied = True
 
@@ -114,7 +122,7 @@ from splitcross import SplitCrossEntropyLoss
 criterion = None
 
 ntokens = len(corpus.dictionary)
-model = model.RNNModel(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.dropouth, args.dropouti, args.dropoute, args.wdrop, args.tied)
+model = model.RNNModel(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.dropouth, args.dropouti, args.dropoute, args.wdrop, args.tied, args.salience_type, args.smooth_factor, args.smooth_samples, args.integral_steps)
 ###
 if args.resume:
     print('Resuming model ...')
@@ -162,8 +170,9 @@ def evaluate(data_source, batch_size=10):
     hidden = model.init_hidden(batch_size)
     for i in range(0, data_source.size(0) - 1, args.bptt):
         data, targets = get_batch(data_source, i, args, evaluation=True)
-        output, hidden = model(data, hidden)
-        total_loss += len(data) * criterion(model.decoder.weight, model.decoder.bias, output, targets).data
+        output, hidden = model(data, hidden)  # output: (seq_len * batch, num_dir * hidden_size)
+        loss = len(data) * criterion(model.decoder.weight, model.decoder.bias, output, targets)
+        total_loss += loss.detach()
         hidden = repackage_hidden(hidden)
     return total_loss.item() / len(data_source)
 
