@@ -24,7 +24,7 @@ def batchify(data, bsz, args):
 
 def batchify2(data, batch_size, pad_index, order=None):
     """
-  
+
     :param data: [(sent_len,)]
     :param batch_size:
     :param pad_index:
@@ -47,7 +47,7 @@ def batchify2(data, batch_size, pad_index, order=None):
         mask_tensor[0:len(sent_data), idx] = 1
       batchized_data.append(batch_tensor)
       batchized_mask.append(mask_tensor)
-  
+
     # last batch
     if len(data) % batch_size != 0:
       batch_data = data[len(data) // batch_size * batch_size:]

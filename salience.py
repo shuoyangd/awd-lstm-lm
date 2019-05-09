@@ -29,8 +29,8 @@ class SalienceManager:
 
   @classmethod
   def compute_salience(cls, grad):
-    grad = torch.clamp(grad, min=0.0).detach().cpu()
-    cls.single_sentence_salience.append(grad[:, 1:])  # first token is bos, which we don't care
+    # grad = torch.clamp(grad, min=0.0).detach().cpu()
+    cls.single_sentence_salience.append(grad)  # no need to skip words
 
   @classmethod
   def extend_salience(cls, grad):
@@ -87,10 +87,19 @@ class SalienceManager:
 
   @classmethod
   def average(cls):
-    stacked_salience = torch.stack(single_sentence_salience, dim=1)  # (bsz * n_samples, tgt_len, src_len)
+    stacked_salience = torch.stack(cls.single_sentence_salience, dim=1)  # (bsz * n_samples, tgt_len, src_len)
     bsz_samples, tgt_len, src_len = stacked_salience.size()
     stacked_salience = stacked_salience.view(cls.__bsz, cls.__n_samples, tgt_len, src_len)
     averaged_salience = torch.mean(stacked_salience, dim=1)
+    return averaged_salience
+
+  @classmethod
+  def average_single_timestep(cls):
+    stacked_salience = torch.stack(cls.single_sentence_salience, dim=1)  # (src_len, bsz * n_samples, bsz * n_samples)
+    stacked_salience = torch.sum(stacked_salience, dim=1)  # (src_len, bsz * n_samples)
+    src_len, bsz_samples = stacked_salience.size()
+    stacked_salience = stacked_salience.view(src_len, cls.__bsz, cls.__n_samples)
+    averaged_salience = torch.mean(stacked_salience, dim=2)
     return averaged_salience
 
   @classmethod
@@ -123,13 +132,14 @@ class SalienceEmbedding(nn.Embedding):
     self.activated = False
 
 
-  def activate(self):
+  def activate(self, salience_type):
     """
     Salience should not be computed for all evaluations, like validation during training.
     In these cases, SalienceEmbedding should act the same way as normal word embedding.
     This switch should be turned on when salience needs to be computed.
     """
     self.activated = True
+    self.salience_type = salience_type
 
 
   def deactivate(self):

@@ -17,14 +17,14 @@ class RNNModel(nn.Module):
         self.idrop = nn.Dropout(dropouti)
         self.hdrop = nn.Dropout(dropouth)
         self.drop = nn.Dropout(dropout)
-        if salience_type:
-            self.encoder = salience.SalienceEmbedding(ntoken, ninp,
-                                                      salience_type=eval("SalienceType.{0}".format(salience_type)),
-                                                      smooth_factor=smooth_factor,
-                                                      smooth_samples=smooth_samples,
-                                                      integral_steps=integral_steps)
-        else:
-            self.encoder = nn.Embedding(ntoken, ninp)
+        # if salience_type:
+        self.encoder = salience.SalienceEmbedding(ntoken, ninp,
+                                                  salience_type=eval("SalienceType.{0}".format(salience_type)) if salience_type else None,
+                                                  smooth_factor=smooth_factor,
+                                                  smooth_samples=smooth_samples,
+                                                  integral_steps=integral_steps)
+        # else:
+        #   self.encoder = nn.Embedding(ntoken, ninp)
         assert rnn_type in ['LSTM', 'QRNN', 'GRU'], 'RNN type is not supported'
         if rnn_type == 'LSTM':
             self.rnns = [torch.nn.LSTM(ninp if l == 0 else nhid, nhid if l != nlayers - 1 else (ninp if tie_weights else nhid), 1, dropout=0) for l in range(nlayers)]

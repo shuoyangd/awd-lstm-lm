@@ -3,6 +3,13 @@ import torch
 
 from collections import Counter
 
+def read_subjs_data(filename):
+  subjs_file = open(filename)
+  subjs = []
+  for line in subjs_file:
+    subjs.append(torch.LongTensor([int(idx) for idx in line.strip().split()]))
+  return subjs
+
 
 class Dictionary(object):
     def __init__(self):
@@ -58,7 +65,7 @@ class Corpus(object):
 
 class SentCorpus(object):
     def __init__(self, path, dictionary):
-        self.dictionary = dictionary 
+        self.dictionary = dictionary
         self.test = self.tokenize(path)
 
     def tokenize(self, path):
@@ -66,13 +73,13 @@ class SentCorpus(object):
         assert os.path.exists(path)
         # Tokenize file content
         ids = []
+        unk_idx = self.dictionary.word2idx["<unk>"]
         with open(path, 'r') as f:
             for line in f:
                 words = line.split() + ['<eos>']
                 sent = torch.LongTensor(len(words))
                 for idx, word in enumerate(words):
-                    sent[idx] = self.dictionary.word2idx[word]
+                    sent[idx] = self.dictionary.word2idx.get(word, unk_idx)
                 ids.append(sent)
 
         return ids
-

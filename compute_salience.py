@@ -14,6 +14,7 @@ import torch.nn.functional as F
 
 from utils import batchify2
 from salience import SalienceManager
+from salience import SalienceType
 
 logging.basicConfig(
   format='%(asctime)s %(levelname)s: %(message)s',
@@ -31,6 +32,7 @@ opt_parser.add_argument("--cuda", action='store_true', default=False, help="use 
 
 def model_load(fn):
   with open(fn, 'rb') as f:
+    # model, criterion, optimizer = torch.load(f, map_location=lambda storage, loc: storage)
     model, criterion, optimizer = torch.load(f)
     return model, criterion, optimizer
 
@@ -43,14 +45,16 @@ def get_normalized_probs(output, weight, log_probs=True):
     return F.softmax(logits, dim=-1)
 
 
-def compute_salience(prefix_data, verbs_data, model, batch_size=10, cuda=False):
-  for (prefix_batch, prefix_mask), (verbs_batch, _) in zip(prefix_data, verbs_data):
+def compute_salience(prefix_data, verbs_data, subjs_data, model, batch_size=10, cuda=False):
+  for (prefix_batch, prefix_mask), (verbs_batch, _), (subjs_batch, _) in \
+      zip(zip(prefix_data[0], prefix_data[1]), zip(verbs_data[0], verbs_data[1]), zip(subjs_data[0], subjs_data[1])):
     padded_seq_len = prefix_batch.size(0)
     hidden = model.init_hidden(batch_size)
     if cuda:
-      prefix_batch = prefix_batch.cuda()
+      prefix_batch = prefix_batch.cuda()  # (src_len, bsz * n_samples)  # TODO may need some expanding
       verbs_batch = verbs_batch.cuda()
       prefix_mask = prefix_mask.cuda()
+      subjs_batch = subjs_batch.cuda()  # (2, bsz)
     output, hidden = model(prefix_batch, hidden)
     probs = get_normalized_probs(output, model.decoder.weight).view(padded_seq_len, batch_size, -1)
 
@@ -59,13 +63,16 @@ def compute_salience(prefix_data, verbs_data, model, batch_size=10, cuda=False):
     final_word_probs = torch.gather(probs, 0, final_prefix_index).squeeze(0)  # (bsz, vocab_size)
 
     SalienceManager.backward_with_salience_single_timestep(final_word_probs, verbs_batch[0, :], model)
-    averaged_salience_verum = SalienceManager.average()  # (bsz, 1, src_len)
+    averaged_salience_verum = SalienceManager.average_single_timestep()  # (src_len, bsz)
     SalienceManager.clear_salience()
-    pdb.set_trace()
     SalienceManager.backward_with_salience_single_timestep(final_word_probs, verbs_batch[1, :], model)
-    averaged_salience_malum = SalienceManager.average()  # (bsz, 1, src_len)
+    averaged_salience_malum = SalienceManager.average_single_timestep()  # (src_len, bsz)
     SalienceManager.clear_salience()
-    pdb.set_trace()
+
+    verum_subj_salience = torch.gather(averaged_salience_verum, 0, subjs_batch[0, :].unsqueeze(0))  # (1, bsz)
+    malum_subj_salience = torch.gather(averaged_salience_malum, 0, subjs_batch[1, :].unsqueeze(0))  # (1, bsz)
+
+    # TODO calculate score conditioned on verb verum/malum probability
 
 
 def main(options):
@@ -82,12 +89,14 @@ def main(options):
 
   model, _, _ = model_load(options.save)
   model.train()
-  model.encoder.activate()
-  prefix_corpus = data.SentCorpus(options.data + ".prefx.txt", trn_corpus.dictionary)
-  verbs_corpus = data.SentCorpus(options.data + ".verbs.txt", trn_corpus.dictionary)
-  prefix_data = batchify2(prefix_corpus.test, options.batch_size, corpus.dictionary.word2idx["<eos>"])
-  verbs_data = batchify2(verbs_corpus.test, options.batch_size, corpus.dictionary.word2idx["<eos>"])
-  salience = compute_salience(prefix_data, verbs_data, model, options.batch_size, options.cuda)
+  model.encoder.activate(SalienceType.vanilla)
+  prefix_corpus = data.SentCorpus(options.data_prefix + ".prefx.txt", trn_corpus.dictionary)
+  verbs_corpus = data.SentCorpus(options.data_prefix + ".verbs.txt", trn_corpus.dictionary)
+  subjs_corpus = data.read_subjs_data(options.data_prefix + ".subjs.txt")
+  prefix_data = batchify2(prefix_corpus.test, options.batch_size, prefix_corpus.dictionary.word2idx["<eos>"])
+  verbs_data = batchify2(verbs_corpus.test, options.batch_size, prefix_corpus.dictionary.word2idx["<eos>"])
+  subjs_data = batchify2(subjs_corpus, options.batch_size, -1)  # there won't be pad for this
+  compute_salience(prefix_data, verbs_data, subjs_data, model, options.batch_size, options.cuda)
 
 
 if __name__ == "__main__":
