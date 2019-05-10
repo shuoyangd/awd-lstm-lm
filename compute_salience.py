@@ -49,9 +49,15 @@ def get_normalized_probs(output, weight, log_probs=True):
     return F.softmax(logits, dim=-1)
 
 
-def evaluate(prefix_data, verbs_data, subjs_data, model, cuda=False):
+def evaluate(prefix_data, verbs_data, subjs_data, model, outdir, cuda=False):
   total_count = 0
   match_count = 0
+  pos_count = 0
+  neg_count = 0
+  pos_match_count = 0
+  neg_match_count = 0
+  verum_salience_output = open(outdir + ".verum", 'w')
+  malum_salience_output = open(outdir + ".malum", 'w')
   # bsz and batch_size are the same thing :)
   for (prefix_batch, prefix_mask), (verbs_batch, _), (subjs_batch, _) in \
       zip(zip(prefix_data[0], prefix_data[1]), zip(verbs_data[0], verbs_data[1]), zip(subjs_data[0], subjs_data[1])):
@@ -88,6 +94,9 @@ def evaluate(prefix_data, verbs_data, subjs_data, model, cuda=False):
     averaged_salience_malum = SalienceManager.average_single_timestep()  # (src_len, bsz)
     SalienceManager.clear_salience()
 
+    verum_salience_output.write(str(averaged_salience_verum.squeeze().tolist()) + "\n")
+    malum_salience_output.write(str(averaged_salience_malum.squeeze().tolist()) + "\n")
+
     verum_subj_salience = torch.gather(averaged_salience_verum, 0, subjs_batch[0, :].unsqueeze(0))  # (1, bsz)
     malum_subj_salience = torch.gather(averaged_salience_malum, 0, subjs_batch[1, :].unsqueeze(0))  # (1, bsz)
     verum_subj_salience = verum_subj_salience.squeeze()
@@ -99,13 +108,33 @@ def evaluate(prefix_data, verbs_data, subjs_data, model, cuda=False):
     verum_probs = torch.mean(verum_probs, dim=1)  # (bsz,)
     malum_probs = torch.mean(malum_probs, dim=1)  # (bsz,)
 
-    match = (verum_subj_salience > malum_subj_salience) * (verum_probs > malum_probs) + \
-            (verum_subj_salience <= malum_subj_salience) * (verum_probs <= malum_probs)
+    pos_match = (verum_subj_salience > malum_subj_salience) * (verum_probs > malum_probs)
+    neg_match = (verum_subj_salience < malum_subj_salience) * (verum_probs < malum_probs)
+    match = pos_match + neg_match
+
     total_count += subjs_batch.size(1)
     match_count += torch.sum(match)
+    pos_count += torch.sum((verum_probs > malum_probs))
+    neg_count += torch.sum((verum_probs < malum_probs))
+    pos_match_count += torch.sum(pos_match)
+    neg_match_count += torch.sum(neg_match)
     logging.info("running frac: {0} / {1} = {2}".format(match_count, total_count, match_count.item() / total_count))
+    if pos_count != 0:
+        logging.info("running pos frac: {0} / {1} = {2}".format(pos_match_count, pos_count, pos_match_count.item() / pos_count.item()))
+    else:
+        logging.info("running pos frac: 0 / 0 = 0")
+        pos_count = 1
+    if neg_count != 0:
+        logging.info("running neg frac: {0} / {1} = {2}".format(neg_match_count, neg_count, neg_match_count.item() / neg_count.item()))
+    else:
+        logging.info("running neg frac: 0 / 0 = 0")
+        neg_count = 1
 
-  return match_count.item() / total_count
+  verum_salience_output.close()
+  malum_salience_output.close()
+  return (match_count.item() / total_count, \
+          pos_match_count.item() / pos_count.item(), \
+          neg_match_count.item() / neg_count.item())
 
 
 def main(options):
@@ -129,7 +158,7 @@ def main(options):
   prefix_data = batchify2(prefix_corpus.test, options.batch_size, prefix_corpus.dictionary.word2idx["<eos>"])
   verbs_data = batchify2(verbs_corpus.test, options.batch_size, prefix_corpus.dictionary.word2idx["<eos>"])
   subjs_data = batchify2(subjs_corpus, options.batch_size, -1)  # there won't be pad for this
-  frac = evaluate(prefix_data, verbs_data, subjs_data, model, options.cuda)
+  frac = evaluate(prefix_data, verbs_data, subjs_data, model, options.output, options.cuda)
   print(frac)
 
 

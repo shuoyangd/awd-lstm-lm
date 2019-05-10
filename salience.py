@@ -156,7 +156,7 @@ class SalienceEmbedding(nn.Embedding):
     We assume that the second dimension is the batch size.
     """
 
-    batch_size = input.size(0)
+    batch_size = input.size(1)
     if self.salience_type and self.activated:
       # in case where multiple samples are needed
       # repeat the samples and set accompanying parameters accordingly
@@ -166,7 +166,7 @@ class SalienceEmbedding(nn.Embedding):
       if self.salience_type == SalienceType.smoothed:
         new_size_expand = tuple([ orig_size[0], orig_size[1], self.smooth_samples ] + orig_size[2:])
       elif self.salience_type == SalienceType.integral:
-        new_size_expand = tuple([orig_size[0], orig_size[1], self.integral_steps] + orig_size[1:])
+        new_size_expand = tuple([ orig_size[0], orig_size[1], self.integral_steps ] + orig_size[2:])
 
       if new_size_expand:
         new_size = tuple([new_size_expand[0], new_size_expand[1] * new_size_expand[2]] + list(new_size_expand[3:]))
@@ -184,9 +184,9 @@ class SalienceEmbedding(nn.Embedding):
       if self.salience_type == SalienceType.integral:
         alpha = torch.arange(0, 1, 1 / self.integral_steps) + 1 / self.integral_steps  # (0, 1] rather than [0, 1)
         alpha = alpha.unsqueeze(0).expand(batch_size, self.integral_steps)
-        alpha = alpha.view(batch_size * self.integral_steps, -1).squeeze()
+        alpha = alpha.contiguous().view(batch_size * self.integral_steps, -1).squeeze()
         alpha = alpha.type_as(x)  # (batch_size * integral_steps)
-        xp = xp * sel * alpha.unsqueeze(1)
+        xp = xp * sel * alpha
       else:
         xp = xp * sel
       x = xp.permute(1, 2, 0)
