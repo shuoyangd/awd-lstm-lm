@@ -97,10 +97,10 @@ def evaluate(prefix_data, verbs_data, subjs_data, model, outdir, cuda=False):
     verum_salience_output.write(str(averaged_salience_verum.squeeze().tolist()) + "\n")
     malum_salience_output.write(str(averaged_salience_malum.squeeze().tolist()) + "\n")
 
-    verum_subj_salience = torch.gather(averaged_salience_verum, 0, subjs_batch[0, :].unsqueeze(0))  # (1, bsz)
-    malum_subj_salience = torch.gather(averaged_salience_malum, 0, subjs_batch[1, :].unsqueeze(0))  # (1, bsz)
-    verum_subj_salience = verum_subj_salience.squeeze()
-    malum_subj_salience = malum_subj_salience.squeeze()
+    pos_verum_subj_salience = torch.gather(averaged_salience_verum, 0, subjs_batch[0, :].unsqueeze(0)).squeeze()  # (bsz,)
+    pos_malum_subj_salience = torch.gather(averaged_salience_malum, 0, subjs_batch[0, :].unsqueeze(0)).squeeze()  # (bsz,)
+    neg_verum_subj_salience = torch.gather(averaged_salience_verum, 0, subjs_batch[1, :].unsqueeze(0)).squeeze()
+    neg_malum_subj_salience = torch.gather(averaged_salience_malum, 0, subjs_batch[1, :].unsqueeze(0)).squeeze()
 
     # TODO calculate score conditioned on verb verum/malum probability
     verum_probs = torch.gather(verb_probs, -1, verbs_batch[0, :].unsqueeze(1).expand(batch_size, sample_size).contiguous().view(-1).unsqueeze(1)).view(batch_size, -1)  # (bsz, n_samples)
@@ -108,8 +108,8 @@ def evaluate(prefix_data, verbs_data, subjs_data, model, outdir, cuda=False):
     verum_probs = torch.mean(verum_probs, dim=1)  # (bsz,)
     malum_probs = torch.mean(malum_probs, dim=1)  # (bsz,)
 
-    pos_match = (verum_subj_salience > malum_subj_salience) * (verum_probs > malum_probs)
-    neg_match = (verum_subj_salience < malum_subj_salience) * (verum_probs < malum_probs)
+    pos_match = (pos_verum_subj_salience > pos_malum_subj_salience) * (verum_probs > malum_probs)
+    neg_match = (neg_verum_subj_salience < neg_malum_subj_salience) * (verum_probs < malum_probs)
     match = pos_match + neg_match
 
     total_count += subjs_batch.size(1)
@@ -132,9 +132,9 @@ def evaluate(prefix_data, verbs_data, subjs_data, model, outdir, cuda=False):
 
   verum_salience_output.close()
   malum_salience_output.close()
-  return (match_count.item() / total_count, \
-          pos_match_count.item() / pos_count.item(), \
-          neg_match_count.item() / neg_count.item())
+  return (match_count.item(), total_count, match_count.item() / total_count, \
+          pos_match_count.item(), pos_count.item(), pos_match_count.item() / pos_count.item(), \
+          neg_match_count.item(), neg_count.item(), neg_match_count.item() / neg_count.item())
 
 
 def main(options):
