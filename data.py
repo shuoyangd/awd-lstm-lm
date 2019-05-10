@@ -76,7 +76,7 @@ class SentCorpus(object):
         unk_idx = self.dictionary.word2idx["<unk>"]
         with open(path, 'r') as f:
             for line in f:
-                words = line.split() + ['<eos>']
+                words = line.split()  # Shuoyang: don't need eos in our case
                 sent = torch.LongTensor(len(words))
                 for idx, word in enumerate(words):
                     sent[idx] = self.dictionary.word2idx.get(word, unk_idx)

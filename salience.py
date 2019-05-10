@@ -79,6 +79,7 @@ class SalienceManager:
         cls.__n_samples = model.encoder.integral_steps
     else:
         cls.__n_samples = 1
+    target = target.unsqueeze(1).expand(cls.__bsz, cls.__n_samples).contiguous().view(-1)
     target_probs = torch.gather(probs, -1, target.unsqueeze(1)).view(cls.__bsz, cls.__n_samples)  # (batch_size, n_samples)
     target_probs = torch.mean(target_probs, dim=1)  # (batch_size,)
     for i in range(cls.__bsz):
@@ -95,7 +96,8 @@ class SalienceManager:
 
   @classmethod
   def average_single_timestep(cls):
-    stacked_salience = torch.stack(cls.single_sentence_salience, dim=1)  # (src_len, bsz * n_samples, bsz * n_samples)
+    # the second dimension is of size bsz because we did averaging before backprop
+    stacked_salience = torch.stack(cls.single_sentence_salience, dim=1)  # (src_len, bsz, bsz * n_samples)
     stacked_salience = torch.sum(stacked_salience, dim=1)  # (src_len, bsz * n_samples)
     src_len, bsz_samples = stacked_salience.size()
     stacked_salience = stacked_salience.view(src_len, cls.__bsz, cls.__n_samples)
@@ -151,7 +153,7 @@ class SalienceEmbedding(nn.Embedding):
     Note that this module is slightly more constrained on the shape of input than
     the original nn.Embedding class.
 
-    We assume that the first dimension is the batch size.
+    We assume that the second dimension is the batch size.
     """
 
     batch_size = input.size(0)
@@ -160,11 +162,15 @@ class SalienceEmbedding(nn.Embedding):
       # repeat the samples and set accompanying parameters accordingly
       orig_size = list(input.size())
       new_size = orig_size
+      new_size_expand = None
       if self.salience_type == SalienceType.smoothed:
-        new_size = tuple([orig_size[0] * self.smooth_samples] + orig_size[1:])
-      if self.salience_type == SalienceType.integral:
-        new_size = tuple([orig_size[0] * self.integral_steps] + orig_size[1:])
-      input = input.expand(*new_size)
+        new_size_expand = tuple([ orig_size[0], orig_size[1], self.smooth_samples ] + orig_size[2:])
+      elif self.salience_type == SalienceType.integral:
+        new_size_expand = tuple([orig_size[0], orig_size[1], self.integral_steps] + orig_size[1:])
+
+      if new_size_expand:
+        new_size = tuple([new_size_expand[0], new_size_expand[1] * new_size_expand[2]] + list(new_size_expand[3:]))
+        input = input.unsqueeze(2).expand(*new_size_expand).contiguous().view(*new_size)
 
     # normal embedding query
     x = super(SalienceEmbedding, self).forward(input)
@@ -185,9 +191,9 @@ class SalienceEmbedding(nn.Embedding):
         xp = xp * sel
       x = xp.permute(1, 2, 0)
 
-      if self.salience_type == SalienceType.smoothed and self.smoothing_factor > 0.0:
+      if self.salience_type == SalienceType.smoothed and self.smooth_factor > 0.0:
           x = x + torch.normal(torch.zeros_like(x), \
-                  torch.ones_like(x) * smoothing_factor * (torch.max(x) - torch.min(x)))
+                  torch.ones_like(x) * self.smooth_factor * (torch.max(x) - torch.min(x)))
 
     return x
 
