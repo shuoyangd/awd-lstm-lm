@@ -146,8 +146,8 @@ def main(options):
     trn_corpus = torch.load(fn)
   else:
     print('Producing dataset...')
-    trn_corpus = data.Corpus(args.data)
-    torch.save(corpus, fn)
+    trn_corpus = data.Corpus(options.dict_data)
+    torch.save(trn_corpus, fn)
 
   model, _, _ = model_load(options.save)
   model.eval()
