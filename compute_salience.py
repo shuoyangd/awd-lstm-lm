@@ -71,20 +71,33 @@ def evaluate(prefix_data, verbs_data, subjs_data, model, outdir, cuda=False):
 
     padded_seq_len = prefix_batch.size(0)
     hidden = model.init_hidden(bsz_samples)
-    model.reset()
+    no_salience_hidden = model.init_hidden(batch_size)
     if cuda:
       prefix_batch = prefix_batch.cuda()  # (src_len, bsz)  # TODO may need some expanding
       verbs_batch = verbs_batch.cuda()
       prefix_mask = prefix_mask.cuda()
       subjs_batch = subjs_batch.cuda()  # (2, bsz) XXX: shouldn't be expanded
+
+    # first evaluation: get probability of two verbs
+    real_salience_type = model.encoder.salience_type
+    model.salience_type = None
+    model.reset()
+    model.encoder.deactivate()
+    no_salience_output, _ = model(prefix_batch, no_salience_hidden)
+    no_salience_probs = get_normalized_probs(no_salience_output, model.decoder.weight).view(padded_seq_len, batch_size, -1)
+
+    # second evaluation: salience computation
+    model.reset()
+    model.encoder.activate(real_salience_type)
     output, hidden = model(prefix_batch, hidden)
 
     probs = get_normalized_probs(output, model.decoder.weight).view(padded_seq_len, bsz_samples, -1)
 
     final_prefix_index = torch.sum(prefix_mask, dim=0).unsqueeze(0) - 1  # (1, bsz)
     final_prefix_index = final_prefix_index.unsqueeze(2).expand(-1, -1, probs.size(-1))  # (1, batch_size, vocab_size)
+    no_salience_verb_probs = torch.gather(no_salience_probs, 0, final_prefix_index).squeeze(0)  # (bsz, vocab_size)
     # this is the probability conditioned on ALL the words in the prefix, i.e., the probability of the verb
-    final_prefix_index = final_prefix_index.unsqueeze(2).expand(-1, -1, sample_size, -1).contiguous().view(1, bsz_samples, -1)  # (1, batch_size, vocab_size)
+    final_prefix_index = final_prefix_index.unsqueeze(2).expand(-1, -1, sample_size, -1).contiguous().view(1, bsz_samples, -1)  # (1, batch_size * sample_size, vocab_size)
     verb_probs = torch.gather(probs, 0, final_prefix_index).squeeze(0)  # (bsz * n_samples, vocab_size)
 
     SalienceManager.backward_with_salience_single_timestep(verb_probs, verbs_batch[0, :], model)
@@ -102,9 +115,11 @@ def evaluate(prefix_data, verbs_data, subjs_data, model, outdir, cuda=False):
     neg_verum_subj_salience = torch.gather(averaged_salience_verum, 0, subjs_batch[1, :].unsqueeze(0)).squeeze()
     neg_malum_subj_salience = torch.gather(averaged_salience_malum, 0, subjs_batch[1, :].unsqueeze(0)).squeeze()
 
-    # TODO calculate score conditioned on verb verum/malum probability
-    verum_probs = torch.gather(verb_probs, -1, verbs_batch[0, :].unsqueeze(1).expand(batch_size, sample_size).contiguous().view(-1).unsqueeze(1)).view(batch_size, -1)  # (bsz, n_samples)
-    malum_probs = torch.gather(verb_probs, -1, verbs_batch[1, :].unsqueeze(1).expand(batch_size, sample_size).contiguous().view(-1).unsqueeze(1)).view(batch_size, -1)  # (bsz, n_samples)
+    # XXX: must use no salience verb probs here
+    # salience methods that involve samples will change the verb probability here
+    # causing small variance in the test applied
+    verum_probs = torch.gather(no_salience_verb_probs, -1, verbs_batch[0, :].unsqueeze(1).expand(batch_size, sample_size)).view(batch_size, -1)  # (bsz, n_samples)
+    malum_probs = torch.gather(no_salience_verb_probs, -1, verbs_batch[1, :].unsqueeze(1).expand(batch_size, sample_size)).view(batch_size, -1)  # (bsz, n_samples)
     verum_probs = torch.mean(verum_probs, dim=1)  # (bsz,)
     malum_probs = torch.mean(malum_probs, dim=1)  # (bsz,)
 
