@@ -58,8 +58,10 @@ def evaluate(prefix_data, verbs_data, subjs_data, model, outdir, cuda=False):
   neg_match_count = 0
   verum_salience_output = open(outdir + ".verum", 'w')
   malum_salience_output = open(outdir + ".malum", 'w')
+  pos_index_output = open(outdir + ".pos.idx", 'w')
+  passed_index_output = open(outdir + ".passed.idx", 'w')
   # bsz and batch_size are the same thing :)
-  for (prefix_batch, prefix_mask), (verbs_batch, _), (subjs_batch, _) in \
+  for (prefix_batch, prefix_mask), (verbs_batch, _), (subjs_batch, subjs_mask) in \
       zip(zip(prefix_data[0], prefix_data[1]), zip(verbs_data[0], verbs_data[1]), zip(subjs_data[0], subjs_data[1])):
     batch_size = subjs_batch.size(1)
     sample_size = 1
@@ -110,11 +112,6 @@ def evaluate(prefix_data, verbs_data, subjs_data, model, outdir, cuda=False):
     verum_salience_output.write(str(averaged_salience_verum.squeeze().tolist()) + "\n")
     malum_salience_output.write(str(averaged_salience_malum.squeeze().tolist()) + "\n")
 
-    pos_verum_subj_salience = torch.gather(averaged_salience_verum, 0, subjs_batch[0, :].unsqueeze(0)).squeeze()  # (bsz,)
-    pos_malum_subj_salience = torch.gather(averaged_salience_malum, 0, subjs_batch[0, :].unsqueeze(0)).squeeze()  # (bsz,)
-    neg_verum_subj_salience = torch.gather(averaged_salience_verum, 0, subjs_batch[1, :].unsqueeze(0)).squeeze()
-    neg_malum_subj_salience = torch.gather(averaged_salience_malum, 0, subjs_batch[1, :].unsqueeze(0)).squeeze()
-
     # XXX: must use no salience verb probs here
     # salience methods that involve samples will change the verb probability here
     # causing small variance in the test applied
@@ -122,34 +119,57 @@ def evaluate(prefix_data, verbs_data, subjs_data, model, outdir, cuda=False):
     malum_probs = torch.gather(no_salience_verb_probs, -1, verbs_batch[1, :].unsqueeze(1).expand(batch_size, sample_size)).view(batch_size, -1)  # (bsz, n_samples)
     verum_probs = torch.mean(verum_probs, dim=1)  # (bsz,)
     malum_probs = torch.mean(malum_probs, dim=1)  # (bsz,)
+    is_pos = (verum_probs > malum_probs)
+    is_neg = (verum_probs < malum_probs)
 
-    pos_match = (pos_verum_subj_salience > pos_malum_subj_salience) * (verum_probs > malum_probs)
-    neg_match = (neg_verum_subj_salience < neg_malum_subj_salience) * (verum_probs < malum_probs)
-    match = pos_match + neg_match
+    for i in range(batch_size):
+        subject = subjs_batch[0, i]  # scalar
+        attractors = subjs_batch[1:, i]  # (number of attractors, )
+        attractors_mask = subjs_mask[1:, i]  # (number of attractors, )
+        noa = torch.sum(attractors_mask)  # noa -> number of attractors
 
+        pos_subj_salience = averaged_salience_verum[subject, i]
+        neg_subj_salience = averaged_salience_malum[subject, i]
+        pos_subj_salience = pos_subj_salience.expand(noa)  # (number of attractors,)
+        neg_subj_salience = neg_subj_salience.expand(noa)  # (number of attractors,)
+        attractors = attractors[attractors_mask]
+        pos_attr_salience = torch.gather(averaged_salience_verum[:, i], 0, attractors).squeeze()  # (number of attractors,)
+        neg_attr_salience = torch.gather(averaged_salience_malum[:, i], 0, attractors).squeeze()  # (number of attractors,)
+
+        if torch.all(pos_subj_salience > pos_attr_salience) and is_pos[i]:
+          pos_match_count += 1
+          match_count += 1
+          passed_index_output.write(str(total_count + i) + "\n")
+        elif torch.any(neg_subj_salience < neg_attr_salience) and is_neg[i]:
+          neg_match_count += 1
+          match_count += 1
+          passed_index_output.write(str(total_count + i) + "\n")
+
+        if is_pos[i]:
+          pos_index_output.write(str(total_count + i) + "\n")
+
+    pos_count += torch.sum(is_pos)
+    neg_count += torch.sum(is_neg)
     total_count += subjs_batch.size(1)
-    match_count += torch.sum(match)
-    pos_count += torch.sum((verum_probs > malum_probs))
-    neg_count += torch.sum((verum_probs < malum_probs))
-    pos_match_count += torch.sum(pos_match)
-    neg_match_count += torch.sum(neg_match)
-    logging.info("running frac: {0} / {1} = {2}".format(match_count, total_count, match_count.item() / total_count))
+    logging.info("running frac: {0} / {1} = {2}".format(match_count, total_count, match_count / total_count))
     if pos_count != 0:
-        logging.info("running pos frac: {0} / {1} = {2}".format(pos_match_count, pos_count, pos_match_count.item() / pos_count.item()))
+        logging.info("running pos frac: {0} / {1} = {2}".format(pos_match_count, pos_count, pos_match_count / pos_count.item()))
     else:
         logging.info("running pos frac: 0 / 0 = 0")
         pos_count = 1
     if neg_count != 0:
-        logging.info("running neg frac: {0} / {1} = {2}".format(neg_match_count, neg_count, neg_match_count.item() / neg_count.item()))
+        logging.info("running neg frac: {0} / {1} = {2}".format(neg_match_count, neg_count, neg_match_count / neg_count.item()))
     else:
         logging.info("running neg frac: 0 / 0 = 0")
         neg_count = 1
 
   verum_salience_output.close()
   malum_salience_output.close()
-  return (match_count.item(), total_count, match_count.item() / total_count, \
-          pos_match_count.item(), pos_count.item(), pos_match_count.item() / pos_count.item(), \
-          neg_match_count.item(), neg_count.item(), neg_match_count.item() / neg_count.item())
+  passed_index_output.close()
+  pos_index_output.close()
+  return (match_count, total_count, match_count / total_count, \
+          pos_match_count, pos_count.item(), pos_match_count / pos_count.item(), \
+          neg_match_count, neg_count.item(), neg_match_count / neg_count.item())
 
 
 def main(options):
