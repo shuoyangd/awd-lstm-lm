@@ -30,7 +30,7 @@ opt_parser.add_argument("--data-prefix", type=str, metavar="PATH", required=True
 opt_parser.add_argument("--dict-data", type=str, metavar="PATH", required=True, help="path to the data used to build dict")
 opt_parser.add_argument("--output", type=str, metavar="PATH", required=True, help="path to output file")
 opt_parser.add_argument("--batch-size", type=int, default=10, help="test batch size")
-opt_parser.add_argument("--salience-type", type=str, choices=["vanilla", "smoothed", "integral", "li", "li_smoothed"], default="vanilla", help="type of salience")
+opt_parser.add_argument("--salience-type", type=str, choices=["vanilla", "smoothed", "integral", "guided"], default="vanilla", help="type of salience")
 opt_parser.add_argument("--cuda", action='store_true', default=False, help="use cuda")
 
 
@@ -41,10 +41,8 @@ def model_load(fn):
     return model, criterion, optimizer
 
 
-def get_normalized_probs(output, weight, bias=None, log_probs=True):
+def get_normalized_probs(output, weight, log_probs=True):
   logits = torch.matmul(output, weight.transpose(0, 1))  # (samples, vocab_size)
-  if bias is not None:
-      logits += bias
   if log_probs:
     return F.log_softmax(logits, dim=-1)
   else:
@@ -88,7 +86,7 @@ def evaluate(prefix_data, verbs_data, subjs_data, model, outdir, cuda=False):
     model.reset()
     model.encoder.deactivate()
     no_salience_output, _ = model(prefix_batch, no_salience_hidden)
-    no_salience_probs = get_normalized_probs(no_salience_output, model.decoder.weight, model.decoder.bias).view(padded_seq_len, batch_size, -1)
+    no_salience_probs = get_normalized_probs(no_salience_output, model.decoder.weight).view(padded_seq_len, batch_size, -1)
 
     # second evaluation: salience computation
     model.reset()
@@ -106,9 +104,11 @@ def evaluate(prefix_data, verbs_data, subjs_data, model, outdir, cuda=False):
 
     SalienceManager.backward_with_salience_single_timestep(verb_probs, verbs_batch[0, :], model)
     averaged_salience_verum = SalienceManager.average_single_timestep()  # (src_len, bsz)
+    averaged_salience_verum = torch.rand(averaged_salience_verum.size()).type_as(averaged_salience_verum)
     SalienceManager.clear_salience()
     SalienceManager.backward_with_salience_single_timestep(verb_probs, verbs_batch[1, :], model)
     averaged_salience_malum = SalienceManager.average_single_timestep()  # (src_len, bsz)
+    averaged_salience_malum = torch.rand(averaged_salience_malum.size()).type_as(averaged_salience_malum)
     SalienceManager.clear_salience()
 
     verum_salience_output.write(str(averaged_salience_verum.squeeze().tolist()) + "\n")
@@ -117,14 +117,12 @@ def evaluate(prefix_data, verbs_data, subjs_data, model, outdir, cuda=False):
     # XXX: must use no salience verb probs here
     # salience methods that involve samples will change the verb probability here
     # causing small variance in the test applied
-    verum_probs = torch.gather(no_salience_verb_probs, -1, verbs_batch[0, :].unsqueeze(0))  # (bsz, n_samples)
-    malum_probs = torch.gather(no_salience_verb_probs, -1, verbs_batch[1, :].unsqueeze(0))  # (bsz, n_samples)
-    # verum_probs = torch.mean(verum_probs, dim=1)  # (bsz,)
-    # malum_probs = torch.mean(malum_probs, dim=1)  # (bsz,)
+    verum_probs = torch.gather(no_salience_verb_probs, -1, verbs_batch[0, :].unsqueeze(1).expand(batch_size, sample_size)).view(batch_size, -1)  # (bsz, n_samples)
+    malum_probs = torch.gather(no_salience_verb_probs, -1, verbs_batch[1, :].unsqueeze(1).expand(batch_size, sample_size)).view(batch_size, -1)  # (bsz, n_samples)
+    verum_probs = torch.mean(verum_probs, dim=1)  # (bsz,)
+    malum_probs = torch.mean(malum_probs, dim=1)  # (bsz,)
     is_pos = (verum_probs > malum_probs)
     is_neg = (verum_probs < malum_probs)
-    # is_pos = (verum_probs < malum_probs)
-    # is_neg = (verum_probs > malum_probs)
 
     for i in range(batch_size):
         subject = subjs_batch[0, i]  # scalar
@@ -154,8 +152,12 @@ def evaluate(prefix_data, verbs_data, subjs_data, model, outdir, cuda=False):
 
     pos_count += torch.sum(is_pos)
     neg_count += torch.sum(is_neg)
-    total_count += subjs_batch.size(1)
-    logging.info("running frac: {0} / {1} = {2}".format(match_count, total_count, match_count / total_count))
+    # total_count += subjs_batch.size(1)
+    total_count += (torch.sum(is_pos) + torch.sum(is_neg)).item()
+    if total_count != 0:
+        logging.info("running frac: {0} / {1} = {2}".format(match_count, total_count, match_count / total_count))
+    else:
+        logging.info("running pos frac: 0 / 0 = 0")
     if pos_count != 0:
         logging.info("running pos frac: {0} / {1} = {2}".format(pos_match_count, pos_count, pos_match_count / pos_count.item()))
     else:

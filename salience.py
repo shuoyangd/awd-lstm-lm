@@ -4,6 +4,24 @@
 # Created on 2019-04-26
 #
 # Distributed under terms of the MIT license.
+#
+# Using this code snippet in your research work requires you to cite the following paper:
+# @inproceedings{DBLP:conf/wmt/DingXK19,
+#   author    = {Shuoyang Ding and
+#                Hainan Xu and
+#                Philipp Koehn},
+#   title     = {Saliency-driven Word Alignment Interpretation for Neural Machine Translation},
+#   booktitle = {Proceedings of the Fourth Conference on Machine Translation, {WMT}
+#                2019, Florence, Italy, August 1-2, 2019 - Volume 1: Research Papers},
+#   pages     = {1--12},
+#   year      = {2019},
+#   crossref  = {DBLP:conf/wmt/2019-1},
+#   url       = {https://www.aclweb.org/anthology/W19-5201/},
+#   timestamp = {Mon, 26 Aug 2019 14:06:00 +0200},
+#   biburl    = {https://dblp.org/rec/bib/conf/wmt/DingXK19},
+#   bibsource = {dblp computer science bibliography, https://dblp.org}
+# }
+#
 
 from enum import Enum
 import pdb
@@ -15,7 +33,8 @@ class SalienceType(Enum):
   vanilla=1  # word salience in Ding et al. (2019)
   smoothed=2  # word salience with SmoothGrad in Ding et al. (2019)
   integral=3
-  guided=4
+  li=4
+  li_smoothed=5
 
 
 class SalienceManager:
@@ -33,26 +52,31 @@ class SalienceManager:
     cls.single_sentence_salience.append(grad)  # no need to skip words
 
   @classmethod
+  def compute_li_et_al_saliency(cls, grad):
+    grad = torch.mean(torch.abs(grad), dim=-1).detach()
+    cls.single_sentence_salience.append(grad / torch.sum(grad, dim=0).unsqueeze(1))
+
+  @classmethod
   def extend_salience(cls, grad):
     """
     This is used when both source and target salience score needs to be computed.
     """
-    grad = torch.clamp(grad, min=0.0).detach().cpu()
+    grad = torch.clamp(grad, min=0.0).detach()
     last_grad = cls.single_sentence_salience[-1]
     last_grad = torch.cat([grad, last_grad], dim=1)  # we do care about eos though, as it's a separate input token
     # cls.single_sentence_salience[-1] = last_grad
     cls.single_sentence_salience[-1] = last_grad / torch.sum(last_grad, dim=1).unsqueeze(1)
 
   @classmethod
-  def backward_with_salience(cls, probs, target, model):
+  def backward_with_salience(cls, probs, target, model, sequential=False):
     """
     probs: (bsz * n_samples, target_len, vocab_size) output probability distribution with regard to a input sentence
     target: (bsz, target_len) target word to evaluate salience score on
     """
     cls.__bsz, tlen = target.size()
-    if model.encoder.salience_type == SalienceType.smoothed:
+    if model.encoder.salience_type == SalienceType.smoothed and not sequential:
         cls.__n_samples = model.encoder.smooth_samples
-    elif model.encoder.salience_type == SalienceType.integral:
+    elif model.encoder.salience_type == SalienceType.integral and not sequential:
         cls.__n_samples = model.encoder.integral_steps
     else:
         cls.__n_samples = 1
@@ -67,15 +91,15 @@ class SalienceManager:
         model.zero_grad()
 
   @classmethod
-  def backward_with_salience_single_timestep(cls, probs, target, model):
+  def backward_with_salience_single_timestep(cls, probs, target, model, sequential=False):
     """
     probs: (bsz * n_samples, vocab_size) output probability distribution of a single time step with regard to a input sentence
     target: (bsz,) target word corresponding to a single time step, to evaluate salience score on
     """
     cls.__bsz = target.size()[0]
-    if model.encoder.salience_type == SalienceType.smoothed:
+    if model.encoder.salience_type == SalienceType.smoothed and not sequential:
         cls.__n_samples = model.encoder.smooth_samples
-    elif model.encoder.salience_type == SalienceType.integral:
+    elif model.encoder.salience_type == SalienceType.integral and not sequential:
         cls.__n_samples = model.encoder.integral_steps
     else:
         cls.__n_samples = 1
@@ -134,7 +158,7 @@ class SalienceEmbedding(nn.Embedding):
     self.activated = False
 
 
-  def activate(self, salience_type):
+  def activate(self, salience_type, sequential=False):
     """
     Salience should not be computed for all evaluations, like validation during training.
     In these cases, SalienceEmbedding should act the same way as normal word embedding.
@@ -142,6 +166,14 @@ class SalienceEmbedding(nn.Embedding):
     """
     self.activated = True
     self.salience_type = salience_type
+    self.sequential = sequential
+
+
+  def set_sequential_alpha(self, alpha):
+    if not self.sequential:
+      raise Exception("cannot set sequential alpha when salience embedding is not sequential")
+    else:
+      self.sequential_alpha = alpha
 
 
   def deactivate(self):
@@ -163,9 +195,9 @@ class SalienceEmbedding(nn.Embedding):
       orig_size = list(input.size())
       new_size = orig_size
       new_size_expand = None
-      if self.salience_type == SalienceType.smoothed:
+      if self.salience_type == SalienceType.smoothed and not self.sequential:
         new_size_expand = tuple([ orig_size[0], orig_size[1], self.smooth_samples ] + orig_size[2:])
-      elif self.salience_type == SalienceType.integral:
+      elif self.salience_type == SalienceType.integral and not self.sequential:
         new_size_expand = tuple([ orig_size[0], orig_size[1], self.integral_steps ] + orig_size[2:])
 
       if new_size_expand:
@@ -180,18 +212,27 @@ class SalienceEmbedding(nn.Embedding):
       sel.requires_grad = True
       sel.register_hook(lambda grad: SalienceManager.compute_salience(grad))
 
-      xp = x.permute(2, 0, 1)
-      if self.salience_type == SalienceType.integral:
-        alpha = torch.arange(0, 1, 1 / self.integral_steps) + 1 / self.integral_steps  # (0, 1] rather than [0, 1)
-        alpha = alpha.unsqueeze(0).expand(batch_size, self.integral_steps)
-        alpha = alpha.contiguous().view(batch_size * self.integral_steps, -1).squeeze()
-        alpha = alpha.type_as(x)  # (batch_size * integral_steps)
-        xp = xp * sel * alpha
-      else:
-        xp = xp * sel
-      x = xp.permute(1, 2, 0)
+      if not (self.salience_type == SalienceType.li or \
+            self.salience_type == SalienceType.li_smoothed):
+        xp = x.permute(2, 0, 1)
+        if self.salience_type == SalienceType.integral and not self.sequential:
+          alpha = torch.arange(0, 1, 1 / self.integral_steps) + 1 / self.integral_steps  # (0, 1] rather than [0, 1)
+          alpha = alpha.unsqueeze(0).expand(batch_size, self.integral_steps)
+          alpha = alpha.contiguous().view(batch_size * self.integral_steps, -1).squeeze()
+          alpha = alpha.type_as(x)  # (batch_size * integral_steps)
+          xp = xp * sel * alpha
+        elif self.salience_type == SalienceType.integral:  # sequential IG
+          xp = xp * sel * self.sequential_alpha
+        else:
+          xp = xp * sel
 
-      if self.salience_type == SalienceType.smoothed and self.smooth_factor > 0.0:
+        x = xp.permute(1, 2, 0)
+      else:
+        x.register_hook(lambda grad: SalienceManager.compute_li_et_al_saliency(grad))
+
+      if (self.salience_type == SalienceType.smoothed or \
+            self.salience_type == SalienceType.li_smoothed) and \
+            self.smooth_factor > 0.0:
           x = x + torch.normal(torch.zeros_like(x), \
                   torch.ones_like(x) * self.smooth_factor * (torch.max(x) - torch.min(x)))
 
